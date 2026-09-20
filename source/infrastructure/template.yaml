@@ -61,6 +61,8 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
       VersioningConfiguration: {Status: Enabled}
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
 
   DecisionsTable:
     Type: AWS::DynamoDB::Table
@@ -103,7 +105,10 @@ Resources:
                 Resource: !GetAtt DecisionsTable.Arn
               - Effect: Allow
                 Action: bedrock:InvokeModel
-                Resource: '*'
+                Resource:
+                  - arn:aws:bedrock:*::foundation-model/*
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*'
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
               - Effect: Allow
                 Action: cloudwatch:PutMetricData
                 Resource: '*'
@@ -160,7 +165,10 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
-                Resource: '*'
+                Resource:
+                  - arn:aws:bedrock:*::foundation-model/*
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*'
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:application-inference-profile/*'
               - Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt RouterFunction.Arn
