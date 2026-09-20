@@ -156,6 +156,19 @@ PROMPTS = [
 ]
 
 
+# The prompt list above is grouped by task class (5 per class) for editability.
+# For the reel, interleave one prompt per class per round, with classes hand-
+# ordered so expected tiers alternate (fast/coding/balanced/frontier) and the
+# screen color keeps changing.
+GROUPS = [PROMPTS[i:i + 5] for i in range(0, len(PROMPTS), 5)]
+# group indices: 0 simple_qa 1 classify 2 extract 3 summarize 4 rewrite
+# 5 translate 6 code_simple 7 coding 8 code_arch 9 sysadmin 10 product
+# 11 support 12 rag_qa 13 content 14 analysis 15 creative 16 math
+# 17 reasoning 18 agentic 19 fun
+ORDER = [0, 7, 10, 16, 1, 9, 11, 8, 2, 12, 17, 3, 13, 18, 4, 14, 19, 5, 15, 6]
+PROMPTS = [GROUPS[g][i] for i in range(5) for g in ORDER]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="first 20 prompts only")
