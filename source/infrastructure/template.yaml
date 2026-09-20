@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Intelligent Model Router - Generative Classifier (SO-IMR). Routes model:"auto"
+  requests to the right model tier via an Amazon Bedrock AgentCore Gateway
+  inference target with a REQUEST-interceptor decision engine.
+
+Parameters:
+  GatewayName:
+    Type: String
+    Default: intelligent-model-router
+    AllowedPattern: '[a-zA-Z0-9-]{1,48}'
+  DecisionEngine:
+    Type: String
+    Default: jev
+    AllowedValues: [jev, bedrock]
+    Description: >-
+      jev = TypeSafe Jev decision model (fastest/cheapest, needs API key).
+      bedrock = Claude Haiku classifier (in-account, no external calls).
+  JevEndpoint:
+    Type: String
+    Default: https://openrouter.ai/api/alpha/decisions
+    Description: >-
+      Jev API endpoint. OpenRouter: https://openrouter.ai/api/alpha/decisions
+      (model typesafe/jev-1.13). TypeSafe direct: https://api.typesafe.ai/v1/systemone
+      (model jev-1.13.0). Ignored when DecisionEngine=bedrock.
+  JevModel:
+    Type: String
+    Default: typesafe/jev-1.13
+  JevApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: API key for the Jev endpoint (stored in Secrets Manager). Required when DecisionEngine=jev.
+  ClassifierModelId:
+    Type: String
+    Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: Bedrock model for the fallback/alternative classifier engine.
+  OpenAiFamilyModels:
+    Type: String
+    Default: '["global.openai.gpt-5.6-luna","global.openai.gpt-5.6-terra","global.openai.gpt-5.6-sol","us.moonshotai.kimi-k3","moonshotai.kimi-k2.5"]'
+    Description: JSON array of model IDs served on /v1/chat/completions (must include every model referenced in routing_config.json ladders).
+  AnthropicFamilyModels:
+    Type: String
+    Default: '["us.anthropic.claude-sonnet-5","us.anthropic.claude-opus-4-8"]'
+    Description: JSON array of model IDs served on /v1/messages.
+
+Conditions:
+  UseJev: !Equals [!Ref DecisionEngine, jev]
+
+Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${GatewayName}-config-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      VersioningConfiguration: {Status: Enabled}
+
+  DecisionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${GatewayName}-decisions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
+      KeySchema: [{AttributeName: pk, KeyType: HASH}]
+      TimeToLiveSpecification: {AttributeName: ttl, Enabled: true}
+      SSESpecification: {SSEEnabled: true}
+
+  JevSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: UseJev
+    Properties:
+      Name: !Sub '${GatewayName}/jev-api-key'
+      SecretString: !Sub '{"apiKey":"${JevApiKey}"}'
+
+  RouterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: router
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ConfigBucket.Arn}/routing_config.json'
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt DecisionsTable.Arn
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: '*'
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition: {StringEquals: {'cloudwatch:namespace': LLMRouter}}
+              - !If
+                - UseJev
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref JevSecret
+                - !Ref AWS::NoValue
+
+  RouterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${GatewayName}-interceptor'
+      Runtime: python3.12
+      Handler: router.lambda_handler
+      Timeout: 30
+      MemorySize: 512
+      Role: !GetAtt RouterRole.Arn
+      Code: ../lambda/router/
+      Environment:
+        Variables:
+          ROUTER_CONFIG_S3: !Sub 's3://${ConfigBucket}/routing_config.json'
+          DECISIONS_TABLE: !Ref DecisionsTable
+          DECISION_ENGINE: !Ref DecisionEngine
+          JEV_SECRET_NAME: !If [UseJev, !Ref JevSecret, '']
+          JEV_ENDPOINT: !Ref JevEndpoint
+          JEV_MODEL: !Ref JevModel
+          CLASSIFIER_MODEL_ID: !Ref ClassifierModelId
+
+  RouterInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RouterFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock-agentcore.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: bedrock-agentcore.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition: {StringEquals: {'aws:SourceAccount': !Ref 'AWS::AccountId'}}
+      Policies:
+        - PolicyName: gateway
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+                Resource: '*'
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt RouterFunction.Arn
+
+  ProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: provisioner
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Deployment-time-only role. Gateway creation provisions hidden
+              # dependencies (workload identity) requiring broad agentcore access.
+              - Effect: Allow
+                Action: 'bedrock-agentcore:*'
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt GatewayRole.Arn
+
+  ProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${GatewayName}-provisioner'
+      Runtime: python3.12
+      Handler: provisioner.handler
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt ProvisionerRole.Arn
+      Code: ../lambda/provisioner/
+
+  Gateway:
+    Type: Custom::AgentCoreInferenceGateway
+    DependsOn: [RouterInvokePermission]
+    Properties:
+      ServiceToken: !GetAtt ProvisionerFunction.Arn
+      GatewayName: !Ref GatewayName
+      GatewayRoleArn: !GetAtt GatewayRole.Arn
+      RouterLambdaArn: !GetAtt RouterFunction.Arn
+      OpenAiFamilyModels: !Ref OpenAiFamilyModels
+      AnthropicFamilyModels: !Ref AnthropicFamilyModels
+
+Outputs:
+  ChatCompletionsUrl:
+    Description: OpenAI-compatible endpoint. POST with model:"auto" and SigV4 (service bedrock-agentcore).
+    Value: !GetAtt Gateway.ChatCompletionsUrl
+  MessagesUrl:
+    Description: Anthropic-compatible endpoint. POST with model:"auto" and SigV4.
+    Value: !GetAtt Gateway.MessagesUrl
+  GatewayArn:
+    Description: Grant callers bedrock-agentcore InvokeGateway-class access on this ARN.
+    Value: !GetAtt Gateway.GatewayArn
+  ConfigLocation:
+    Description: Edit this file to change routing behavior (hot-reload, ~60s).
+    Value: !Sub 's3://${ConfigBucket}/routing_config.json'
+  DecisionsTable:
+    Description: Per-request routing decisions (24h TTL).
+    Value: !Ref DecisionsTable

@@ -1,0 +1,118 @@
+{
+  "_doc": "LLM Router admin config. Edit + upload to S3; the router hot-reloads within ~60s (no redeploy). Validated on load; invalid config -> router falls back to last-known-good, then baked-in defaults.",
+  "version": 5,
+  "virtual_model": "auto",
+  "engine": "jev",
+  "confidence_floor": 0.5,
+  "complexity_escalation_threshold": {
+    "jev": 2.2,
+    "bedrock": 2.6,
+    "embedding": 2.6,
+    "heuristic": 2.6
+  },
+  "tiers": {
+    "_doc": "target-qualified model per tier, per caller API family. Add/rename tiers freely; every task_base value and escalation value must exist here.",
+    "openai": {
+      "fast": "runtime/global.openai.gpt-5.6-luna",
+      "balanced": "runtime/global.openai.gpt-5.6-terra",
+      "coding": "runtime/us.moonshotai.kimi-k3",
+      "frontier": "runtime/global.openai.gpt-5.6-sol"
+    },
+    "anthropic": {
+      "fast": "runtime/us.anthropic.claude-sonnet-5",
+      "balanced": "runtime/us.anthropic.claude-sonnet-5",
+      "coding": "runtime/us.anthropic.claude-sonnet-5",
+      "frontier": "runtime/us.anthropic.claude-opus-4-8"
+    }
+  },
+  "task_base": {
+    "_doc": "task -> base tier. To add a task type: add it here AND in questions.task.criteria below.",
+    "simple_qa": "fast",
+    "classification": "fast",
+    "extraction": "fast",
+    "summarization": "fast",
+    "rewriting": "fast",
+    "translation": "fast",
+    "customer_support": "balanced",
+    "rag_qa": "balanced",
+    "content_generation": "balanced",
+    "analysis": "balanced",
+    "creative_writing": "balanced",
+    "coding": "coding",
+    "math": "frontier",
+    "reasoning_planning": "frontier",
+    "agentic": "frontier",
+    "code_simple": "fast",
+    "code_architecture": "frontier",
+    "sysadmin_scripting": "coding",
+    "product_requirements": "balanced"
+  },
+  "escalation": {
+    "_doc": "where a tier escalates to when a prompt's complexity exceeds the threshold",
+    "fast": "balanced",
+    "balanced": "frontier",
+    "coding": "frontier",
+    "frontier": "frontier",
+    "code_simple": "coding"
+  },
+  "questions": {
+    "task": {
+      "type": "choice",
+      "instructions": "What kind of task is this request?",
+      "criteria": {
+        "simple_qa": "Simple factual question or short chat",
+        "classification": "Categorize, tag, label or detect sentiment/intent of given text",
+        "extraction": "Extract structured fields or data points from provided text",
+        "summarization": "Summarize, condense or produce key points of provided content",
+        "rewriting": "Edit, proofread, rephrase or change tone of provided text",
+        "translation": "Translate text between languages",
+        "customer_support": "Draft a helpful response to a customer inquiry or complaint",
+        "rag_qa": "Answer a question using provided documents/context/knowledge base",
+        "content_generation": "Create marketing copy, emails, posts, docs or other business content",
+        "analysis": "Multi-step analysis, comparison or synthesis",
+        "creative_writing": "Fiction, stories, poetry or other creative prose",
+        "coding": "Write or modify functions and features, unit tests, standard debugging, moderate SQL, infrastructure-as-code, or code review",
+        "math": "Mathematical or quantitative problem solving",
+        "reasoning_planning": "Deep multi-step reasoning, strategy or complex planning",
+        "agentic": "Orchestrating multi-step workflows, tools or autonomous task execution",
+        "code_simple": "Explain or comment code, small snippets or one-liners, regex, code formatting, simple SQL queries, or mechanical code transforms (rename, add types/docstrings)",
+        "code_architecture": "System or schema design, technology tradeoff decisions, novel algorithm design, performance or concurrency engineering, or migration strategy",
+        "sysadmin_scripting": "Write automation scripts for system administration: shell/bash/PowerShell, cron jobs, log parsing, backup/deploy scripts, server or cloud-resource automation",
+        "product_requirements": "Product management work: gather or refine requirements, write user stories with acceptance criteria, PRDs, epics, feature specs for development handoff"
+      }
+    },
+    "complexity": {
+      "type": "score",
+      "instructions": "How complex is this request for an AI assistant?",
+      "criteria": [
+        "Trivial",
+        "Easy",
+        "Moderate",
+        "Hard",
+        "Frontier-level"
+      ]
+    },
+    "needs_reasoning": {
+      "type": "noul",
+      "instructions": "Answering well requires multi-step reasoning"
+    }
+  },
+  "param_normalization": {
+    "_doc": "models whose OpenAI dialect needs max_completion_tokens instead of max_tokens (substring match)",
+    "max_completion_tokens_models": [
+      "gpt-5.6"
+    ]
+  },
+  "decision_engines": {
+    "_doc": "jev.endpoint options: https://openrouter.ai/api/alpha/decisions (model typesafe/jev-1.13) or TypeSafe native https://api.typesafe.ai/v1/systemone (model jev-1.13.0). secret_name holds {\"apiKey\":\"...\"} in Secrets Manager.",
+    "jev": {
+      "endpoint": "",
+      "model": "",
+      "secret_name": "",
+      "timeout_s": 3
+    },
+    "bedrock": {
+      "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    }
+  }
+}
